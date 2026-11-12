@@ -21,7 +21,6 @@ Quote rules:
 All measurements come from the original QUOTE.psd.
 """
 import json, os, re, sys
-from itertools import combinations
 from PIL import Image, ImageDraw, ImageFilter, ImageFont, ImageChops
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -110,7 +109,10 @@ _FONTS = {}
 def load_font(name, size):
     key = (name, size)
     if key not in _FONTS:
-        _FONTS[key] = ImageFont.truetype(asset(name), size)
+        try:   # raqm = GPOS kerning, like Photoshop's metric kerning
+            _FONTS[key] = ImageFont.truetype(asset(name), size, layout_engine=ImageFont.Layout.RAQM)
+        except Exception:
+            _FONTS[key] = ImageFont.truetype(asset(name), size)
     return _FONTS[key]
 
 
@@ -166,23 +168,45 @@ def split_forced(words):
 
 def best_wrap(words, n, font, max_w=None):
     """Split words into n lines minimizing the widest line.
-    If a split can land exactly where white turns lime and still fits, that wins."""
+    If a split can land exactly where white turns lime and still fits, that wins.
+    (Dynamic programming: fast even for 5-6 line quotes.)"""
     k = len(words)
     if n > k:
         return None
     lime_at = [bool(f) and all(f) for _, f in words]
-    best, best_b = None, None
-    for cuts in combinations(range(1, k), n - 1):
-        idx = (0,) + cuts + (k,)
-        lines = [words[idx[i]:idx[i + 1]] for i in range(n)]
-        wmax = max(visual_w(font, l) for l in lines)
-        if best is None or wmax < best[0]:
-            best = (wmax, lines)
-        on_boundary = any(lime_at[c] != lime_at[c - 1] for c in cuts)
-        if on_boundary and (max_w is None or wmax <= max_w):
-            if best_b is None or wmax < best_b[0]:
-                best_b = (wmax, lines)
-    return best_b or best
+    seg = {}
+    for i in range(k):
+        for j in range(i + 1, k + 1):
+            seg[i, j] = visual_w(font, words[i:j])
+    INF = float("inf")
+    # dp[(j, m, b)] = (max width, prev i) for words[:j] in m lines; b = a cut already sits on a colour change
+    dp = {(0, 0, False): (0.0, None)}
+    for m in range(1, n + 1):
+        for j in range(m, k + 1):
+            for i in range(m - 1, j):
+                for b in (False, True):
+                    prev = dp.get((i, m - 1, b))
+                    if prev is None:
+                        continue
+                    nb = b or (0 < i and lime_at[i] != lime_at[i - 1])
+                    w = max(prev[0], seg[i, j])
+                    key = (j, m, nb)
+                    if key not in dp or w < dp[key][0]:
+                        dp[key] = (w, (i, b))
+    def build(b):
+        if (k, n, b) not in dp:
+            return None
+        out, j, m, bb = [], k, n, b
+        w = dp[(k, n, b)][0]
+        while m > 0:
+            i, pb = dp[(j, m, bb)][1]
+            out.insert(0, words[i:j]); j, m, bb = i, m - 1, pb
+        return (w, out)
+    best_b, best_n = build(True), build(False)
+    best = min([r for r in (best_b, best_n) if r], key=lambda r: r[0])
+    if best_b and (max_w is None or best_b[0] <= max_w):
+        return best_b
+    return best
 
 
 def visual_w(font, line):
@@ -201,8 +225,8 @@ def layout_quote(words, forced):
             size -= 2
         return size, lines
     words = [w for w in words if w[0] != "|"]
-    # preference: <=2 lines at big size, then 3 lines, then 4
-    for max_lines, min_size in ((2, 132), (3, 112), (4, Q_MIN_SIZE)):
+    # preference: <=2 lines at big size, then 3, then 4; longer quotes get more lines (5, 6) rather than smaller text
+    for max_lines, min_size in ((2, 132), (3, 112), (4, Q_MIN_SIZE), (5, Q_MIN_SIZE), (6, Q_MIN_SIZE - 8)):
         size = Q_SIZE
         while size >= min_size:
             f = load_font(Q_FONT, size)
@@ -211,8 +235,8 @@ def layout_quote(words, forced):
                 if r and r[0] <= Q_MAX_W:
                     return size, r[1]
             size -= 2
-    f = load_font(Q_FONT, Q_MIN_SIZE)
-    return Q_MIN_SIZE, best_wrap(words, 4, f)[1]
+    f = load_font(Q_FONT, Q_MIN_SIZE - 8)
+    return Q_MIN_SIZE - 8, best_wrap(words, 6, f)[1]
 
 
 # ---------- drawing ----------
@@ -234,7 +258,7 @@ def render_quote_line(line, font, lime_default):
     dw, dl = ImageDraw.Draw(m_white), ImageDraw.Draw(m_lime)
     track = Q_TRACK * font.size
     for i, ch in enumerate(text):
-        x = pad + font.getlength(text[:i]) + track * i
+        x = pad + font.getlength(text[:i + 1]) - font.getlength(ch) + track * i   # keeps the kerning pair before ch
         (dl if flags[i] else dw).text((x, base_y), ch, font=font, fill=255, anchor="ls")
     # faux italic: shear around baseline
     def shear(im):
@@ -314,7 +338,7 @@ def draw_tracked(draw, xy, text, font, track, fill):
     x, y = xy
     t = track * font.size
     for i, ch in enumerate(text):
-        draw.text((x + font.getlength(text[:i]) + t * i, y), ch, font=font, fill=fill, anchor="ls")
+        draw.text((x + font.getlength(text[:i + 1]) - font.getlength(ch) + t * i, y), ch, font=font, fill=fill, anchor="ls")
 
 
 def fit_photo(path, fx, fy, zoom):

@@ -107,8 +107,18 @@ def asset(name):
     raise FileNotFoundError(f"Missing asset: {name}. Copy it next to the script (or ask the user to attach it).")
 
 
+_FONTS = {}
+
+
 def font(name, size):
-    return ImageFont.truetype(asset(name), size)
+    """Fonts with GPOS kerning (raqm) when available, like Photoshop's metric kerning."""
+    k = (name, size)
+    if k not in _FONTS:
+        try:
+            _FONTS[k] = ImageFont.truetype(asset(name), size, layout_engine=ImageFont.Layout.RAQM)
+        except Exception:
+            _FONTS[k] = ImageFont.truetype(asset(name), size)
+    return _FONTS[k]
 
 
 # ---------- photo ----------
@@ -275,6 +285,14 @@ def wrap_headline(words, size):
         else:
             cur = t
     if cur: lines.append(cur)
+    # no orphan: a single word alone on the last line pulls words down from the line above
+    while len(lines) > 1 and len(lines[-1]) == 1 and len(lines[-2]) > 2:
+        moved = lines[-2].pop()
+        lines[-1].insert(0, moved)
+        if tw(f, " ".join(x for x, _ in lines[-1])) > C_MAX_W:
+            lines[-2].append(lines[-1].pop(0)); break
+        if len(lines[-1]) >= 2:
+            break
     return lines
 
 
@@ -305,7 +323,7 @@ def headline_layer(raw):
         x = W / 2 - tw(f, text) / 2
         y = first_base + i * pitch
         for k, ch in enumerate(text):
-            (dl if flags[k] else dw).text((x + f.getlength(text[:k]) + tr * k, y), ch, font=f, fill=255, anchor="ls")
+            (dl if flags[k] else dw).text((x + f.getlength(text[:k + 1]) - f.getlength(ch) + tr * k, y), ch, font=f, fill=255, anchor="ls")
     top = first_base - cap
     grad = np.zeros((H, 3), np.float32)
     t = np.clip((np.arange(H) - top) / max(1, C_LAST_BASE - top), 0, 1)[:, None] ** 0.7
