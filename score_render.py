@@ -147,11 +147,18 @@ def draw_text(img, xy, s, f, track=0.0, fill=WHITE, lime=False, feats=None):
 
 def white_logo(path, box):
     im = Image.open(path)
-    if im.mode == "RGBA" and im.getchannel("A").getextrema()[0] < 250:
-        out = im.convert("RGBA")
+    # any PNG with real transparency (RGBA, LA, or palette/RGB with a tRNS chunk)
+    # is used as-is; otherwise the luminance becomes the alpha (white on transparent)
+    has_alpha = im.mode in ("RGBA", "LA", "PA") or "transparency" in im.info
+    rgba = im.convert("RGBA")
+    if has_alpha and rgba.getchannel("A").getextrema()[0] < 250:
+        out = rgba
     else:
         out = Image.new("RGBA", im.size, (255, 255, 255, 255))
         out.putalpha(im.convert("L"))
+    bbox = out.getchannel("A").getbbox()   # trim empty margins so the logo fills its box
+    if bbox:
+        out = out.crop(bbox)
     out.thumbnail(box, Image.LANCZOS)
     return out
 
