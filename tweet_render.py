@@ -373,8 +373,8 @@ HEADER_SS = 3   # header text is drawn at 3x and downscaled: clean letter spacin
 BADGE = dict(gap=6, dy=29, d=27)
 XCOM = dict(x=831, dy=37, w=115)
 DIVIDER = dict(x0=101, x1=978, dy=111, h=2, color=(229, 229, 229))
-BODY = dict(x=133, dy=178, size=36, lead=60, max_w=805, regular="Regular", bold="SemiBold", color=(15, 15, 15))
-BOTTOM_PAD = 57                # last baseline -> card bottom
+BODY = dict(x=133, dy=164, size=36, lead=50, max_w=805, regular="Regular", bold="SemiBold", color=(15, 15, 15))
+BOTTOM_PAD = 44                # last baseline -> card bottom (tightened: compact card for long tweets)
 # black gradient behind the card (TWEET.psd "Gradient Fill 5"), alpha every 10 px from y=0
 TW_FADE = [0] * 65 + [1, 4, 7, 10, 13, 17, 22, 27, 32, 38, 45, 51, 58, 66, 73, 80, 89, 97, 106, 116, 126, 137,
                       147, 158, 170, 181, 192, 204, 215, 225, 235, 245, 253] + [255] * 38
