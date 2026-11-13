@@ -21,9 +21,11 @@ Quote rules:
 All measurements come from the original QUOTE.psd.
 """
 import json, os, re, sys
-from PIL import Image, ImageDraw, ImageFilter, ImageFont, ImageChops
+from PIL import Image, ImageDraw, ImageFilter, ImageFont, ImageChops, ImageOps
 
 HERE = os.path.dirname(os.path.abspath(__file__))
+EDIT = None        # studio_editor.Scene while the editor page is being built (see studio_editor.py)
+_FRAMING = {}      # exact photo framing of the last render (zoom, fx, fy), for the editor
 W, H = 1080, 1350
 
 # --- design constants (from QUOTE.psd) ---
@@ -342,7 +344,7 @@ def draw_tracked(draw, xy, text, font, track, fill):
 
 
 def fit_photo(path, fx, fy, zoom):
-    im = Image.open(path).convert("RGB")
+    im = ImageOps.exif_transpose(Image.open(path)).convert("RGB")   # phone photos: respect the rotation flag
     s = max(W / im.width, H / im.height) * zoom
     nw, nh = round(im.width * s), round(im.height * s)
     im = im.resize((nw, nh), Image.LANCZOS)
@@ -372,6 +374,8 @@ def render(data, out_path, photo=None):
         raise SystemExit("A background photo is required: quote_render.py data.json out.png photo.jpg")
     canvas = fit_photo(photo, data.get("bg_focus_x", 0.5), data.get("bg_focus_y", 0.35),
                        data.get("bg_zoom", 1.0)).convert("RGBA")
+    if EDIT is not None:
+        canvas = EDIT.photo(photo, data.get("bg_zoom", 1.0), data.get("bg_focus_x", 0.5), data.get("bg_focus_y", 0.35))
 
     # --- text layout (bottom-up) ---
     sfont = load_font(S_FONT, S_SIZE)
@@ -446,14 +450,22 @@ def render(data, out_path, photo=None):
         logo = logo.resize((LOGO_W, round(logo.height * LOGO_W / logo.width)), Image.LANCZOS)
     canvas.alpha_composite(logo, LOGO_XY)
 
+    if EDIT is not None:
+        EDIT.static(canvas)
     canvas.convert("RGB").save(out_path, quality=95)
     return {"quote_size": qsize, "quote_lines": [" ".join(w for w, _ in l) for l in qlines],
             "subtitle_lines": ["".join(w for w, _ in l) for l in slines], "icon_top": icon_top}
 
 
 if __name__ == "__main__":
-    if len(sys.argv) < 3:
+    args = [a for a in sys.argv[1:] if a != "--editor"]
+    if len(args) < 2:
         print(__doc__); sys.exit(1)
-    data = json.load(open(sys.argv[1], encoding="utf-8"))
-    info = render(data, sys.argv[2], sys.argv[3] if len(sys.argv) > 3 else None)
+    data = json.load(open(args[0], encoding="utf-8"))
+    photo = args[2] if len(args) > 2 else None
+    info = render(data, args[1], photo)
+    if "--editor" in sys.argv or data.get("editor"):
+        # interactive page to drag / zoom the photos: <out>_editor.html (see studio_editor.py)
+        import studio_editor
+        info["editor"] = studio_editor.run(sys.modules[__name__], data, args[1], photo, accent="#CCFA14")
     print(json.dumps(info, ensure_ascii=False))

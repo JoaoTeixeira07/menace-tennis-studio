@@ -5,7 +5,8 @@
    last slide   = CTA / close (cta_render.py)
 
 Usage:
-    python3 carousel_render.py carousel.json
+    python3 carousel_render.py carousel.json [--editor]
+    --editor also writes one editor page per slide (<slide>_editor.html) to drag / zoom the photos.
 
 carousel.json:
 {
@@ -31,7 +32,7 @@ def need(cond, msg):
         raise SystemExit("Carousel input problem: " + msg)
 
 
-def main(path):
+def main(path, editor=False):
     data = json.load(open(path, encoding="utf-8"))
     cover, slides, cta = data.get("cover"), data.get("slides") or [], data.get("cta")
     need(cover and cover.get("photo") and cover.get("text"), "the cover needs a photo and a headline")
@@ -62,6 +63,12 @@ def main(path):
     r = cta_render.render(cta, f, cta["photo"])
     files.append(f); report.append({"slide": n, "template": "cta", "lines": r.get("lines")})
 
+    if editor:   # one editor page per slide: <file>_editor.html (drag / zoom the photos, see studio_editor.py)
+        import studio_editor
+        jobs = [(cover_render, cover)] + [(body_render, s) for s in slides] + [(cta_render, cta)]
+        for (mod, d), f, rep in zip(jobs, files, report):
+            rep["editor"] = studio_editor.run(mod, d, f, d["photo"], accent="#CCFA14")
+
     # contact sheet to check the whole carousel at a glance
     from PIL import Image
     th = [Image.open(x).convert("RGB").resize((270, 338), Image.LANCZOS) for x in files]
@@ -74,6 +81,7 @@ def main(path):
 
 
 if __name__ == "__main__":
-    if len(sys.argv) < 2:
+    args = [a for a in sys.argv[1:] if a != "--editor"]
+    if not args:
         print(__doc__); sys.exit(1)
-    main(sys.argv[1])
+    main(args[0], editor="--editor" in sys.argv)

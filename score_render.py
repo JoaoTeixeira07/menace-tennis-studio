@@ -29,6 +29,8 @@ import numpy as np
 
 W, H = 1080, 1350
 HERE = os.path.dirname(os.path.abspath(__file__))
+EDIT = None        # studio_editor.Scene while the editor page is being built (see studio_editor.py)
+_FRAMING = {}      # exact photo framing of the last render (zoom, fx, fy), for the editor
 
 # ---------- design constants ----------
 LIME, LIME_TOP = (200, 249, 8), (218, 254, 70)
@@ -147,18 +149,11 @@ def draw_text(img, xy, s, f, track=0.0, fill=WHITE, lime=False, feats=None):
 
 def white_logo(path, box):
     im = Image.open(path)
-    # any PNG with real transparency (RGBA, LA, or palette/RGB with a tRNS chunk)
-    # is used as-is; otherwise the luminance becomes the alpha (white on transparent)
-    has_alpha = im.mode in ("RGBA", "LA", "PA") or "transparency" in im.info
-    rgba = im.convert("RGBA")
-    if has_alpha and rgba.getchannel("A").getextrema()[0] < 250:
-        out = rgba
+    if im.mode == "RGBA" and im.getchannel("A").getextrema()[0] < 250:
+        out = im.convert("RGBA")
     else:
         out = Image.new("RGBA", im.size, (255, 255, 255, 255))
         out.putalpha(im.convert("L"))
-    bbox = out.getchannel("A").getbbox()   # trim empty margins so the logo fills its box
-    if bbox:
-        out = out.crop(bbox)
     out.thumbnail(box, Image.LANCZOS)
     return out
 
@@ -272,6 +267,9 @@ def render(data, out_path, photo=None):
             raise SystemExit(f"Winner {winner} didn't win more sets {won_sets}: check the score or add \"status\": \"ret\".")
 
     img = place_photo(photo, data)
+    if EDIT is not None:
+        img = EDIT.photo(photo, data.get("bg_zoom", 1.0), data.get("bg_focus_x", 0.5), data.get("bg_focus_y", 0.35),
+                         bool(data.get("bw")))
     # dark fade towards the cards + tennis texture (Tennis_Carousel_Body.psd overlay)
     img.alpha_composite(vgrad([(0, (0, 0, 0, 0)), (0.5, (0, 0, 0, 0)), (0.66, (4, 14, 8, 225)), (1, (4, 14, 8, 250))]))
     img.alpha_composite(Image.open(asset("score_overlay.png")).convert("RGBA"))
@@ -393,6 +391,8 @@ def render(data, out_path, photo=None):
     if rnd:
         draw_text(img, (CARD_X1 - rw, FOOTER_BASE), rnd, ff, FOOT["track"], lime=True)
 
+    if EDIT is not None:
+        EDIT.static(img)
     img.convert("RGB").save(out_path, quality=95)
 
     def fmt(s, i):
@@ -407,7 +407,14 @@ def render(data, out_path, photo=None):
 
 
 if __name__ == "__main__":
-    if len(sys.argv) < 3:
+    args = [a for a in sys.argv[1:] if a != "--editor"]
+    if len(args) < 2:
         print(__doc__); sys.exit(1)
-    data = json.load(open(sys.argv[1], encoding="utf-8"))
-    print(json.dumps(render(data, sys.argv[2], sys.argv[3] if len(sys.argv) > 3 else None), ensure_ascii=False))
+    data = json.load(open(args[0], encoding="utf-8"))
+    photo = args[2] if len(args) > 2 else None
+    info = render(data, args[1], photo)
+    if "--editor" in sys.argv or data.get("editor"):
+        # interactive page to drag / zoom the photos: <out>_editor.html (see studio_editor.py)
+        import studio_editor
+        info["editor"] = studio_editor.run(sys.modules[__name__], data, args[1], photo, accent="#CCFA14")
+    print(json.dumps(info, ensure_ascii=False))

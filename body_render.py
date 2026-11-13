@@ -19,6 +19,8 @@ from PIL import Image, ImageChops, ImageDraw, ImageFilter, ImageFont, ImageOps
 import numpy as np
 
 HERE = os.path.dirname(os.path.abspath(__file__))
+EDIT = None        # studio_editor.Scene while the editor page is being built (see studio_editor.py)
+_FRAMING = {}      # exact photo framing of the last render (zoom, fx, fy), for the editor
 W, H = 1080, 1350
 PLAYER_HEAD_Y = 210
 
@@ -202,6 +204,7 @@ def place_photo(photo, data, need_cutout, autoframe=None):
         else:
             cut = bg.convert("RGBA")
             cut.putalpha(person_mask(bg))  # recomputed on the final crop for crisp edges
+    _FRAMING.update(zoom=zoom, fx=fx, fy=fy)
     return bg.convert("RGBA"), cut, {"zoom": round(zoom, 2), "focus_x": round(fx, 2), "focus_y": round(fy, 2)}
 
 
@@ -459,6 +462,8 @@ def render(data, out_path, photo=None):
     if not data.get("text"):
         raise SystemExit('The paragraph is required: "text": "..."')
     canvas, _, framing = place_photo(photo, data, need_cutout=False, autoframe=False)
+    if EDIT is not None:
+        canvas = EDIT.photo(photo, _FRAMING["zoom"], _FRAMING["fx"], _FRAMING["fy"], bool(data.get("bw")))
     canvas.alpha_composite(Image.open(asset("body_overlay.png")).convert("RGBA"))   # dark green texture + top glow
     pl, plines, psize, first = para_layer(data["text"])
     tlines, tsize = [], None
@@ -467,12 +472,21 @@ def render(data, out_path, photo=None):
         canvas.alpha_composite(tl)
     canvas.alpha_composite(pl)
     canvas.alpha_composite(logo_img(), LOGO_XY)
+    if EDIT is not None:
+        EDIT.static(canvas)
     canvas.convert("RGB").save(out_path, quality=95)
     return {"title": tlines, "title_size": tsize, "text_lines": plines, "text_size": psize, "framing": framing}
 
 
 if __name__ == "__main__":
-    if len(sys.argv) < 3:
+    args = [a for a in sys.argv[1:] if a != "--editor"]
+    if len(args) < 2:
         print(__doc__); sys.exit(1)
-    data = json.load(open(sys.argv[1], encoding="utf-8"))
-    print(json.dumps(render(data, sys.argv[2], sys.argv[3] if len(sys.argv) > 3 else None), ensure_ascii=False))
+    data = json.load(open(args[0], encoding="utf-8"))
+    photo = args[2] if len(args) > 2 else None
+    info = render(data, args[1], photo)
+    if "--editor" in sys.argv or data.get("editor"):
+        # interactive page to drag / zoom the photos: <out>_editor.html (see studio_editor.py)
+        import studio_editor
+        info["editor"] = studio_editor.run(sys.modules[__name__], data, args[1], photo, accent="#CCFA14")
+    print(json.dumps(info, ensure_ascii=False))
