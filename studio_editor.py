@@ -60,11 +60,21 @@ class Scene:
         self.bg = None          # embedded background photo (PIL) for the cutout mask
 
     # --- movable layers ---
-    def photo(self, path, zoom=1.0, fx=0.5, fy=0.35, bw=False):
+    def photo(self, path, zoom=1.0, fx=0.5, fy=0.35, bw=False, rect=None, key=None, index=None):
+        """rect=(x, y, w, h): the photo fills only that box (e.g. one half of a side-by-side post).
+        key / index: where its framing goes in "Settings for Claude" (e.g. key="left", index=1)."""
         im = _load(path, PHOTO_MAX, bw)
-        self.bg = im
-        self.layers.append({"type": "photo", "src": _uri(im, "JPEG", 92), "w": im.width, "h": im.height,
-                            "zoom": float(zoom), "fx": float(fx), "fy": float(fy)})
+        if self.bg is None:
+            self.bg = im
+        lay = {"type": "photo", "src": _uri(im, "JPEG", 92), "w": im.width, "h": im.height,
+               "zoom": float(zoom), "fx": float(fx), "fy": float(fy)}
+        if rect is not None:
+            lay["rect"] = [int(v) for v in rect]
+        if key is not None:
+            lay["key"] = key
+        if index is not None:
+            lay["index"] = int(index)
+        self.layers.append(lay)
         return Image.new("RGBA", (W, H), (0, 0, 0, 0))
 
     def cutout(self, mask_fn, crop_mask=None):
@@ -246,7 +256,8 @@ const W = S.w, H = S.h, $ = id => document.getElementById(id);
 const cv = $('c'), ctx = cv.getContext('2d');
 document.title = S.title; $('ttl').textContent = S.title;
 const L = S.layers;
-const photo = L.find(l => l.type === 'photo'), circle = L.find(l => l.type === 'circle');
+const photos = L.filter(l => l.type === 'photo'), circle = L.find(l => l.type === 'circle');
+let photo = photos[0];   // the photo the zoom slider acts on (last one touched)
 const ORIG = JSON.parse(JSON.stringify(L.map(l => ({zoom:l.zoom, fx:l.fx, fy:l.fy, d:l.d, cx:l.cx, cy:l.cy}))));
 let target = 'photo';
 
@@ -261,13 +272,15 @@ async function boot(){
   if(!circle){ document.querySelectorAll('.cOnly').forEach(e => e.hidden = true);
     document.querySelectorAll('#seg button[data-t="circle"],#seg button[data-t="inner"]').forEach(b => b.disabled = true);
     $('segHint').hidden = true; }
+  if(photos.length > 1){ $('segHint').hidden = false; $('segHint').textContent = 'Each photo moves on its own: drag the one you want. The zoom slider follows the last photo you touched.'; }
   syncSliders(); render();
 }
 
 /* ---- geometry (same maths as the Python generators) ---- */
-function photoRect(l){ // cover the canvas, zoom, focus = share of the overflow
-  const s = Math.max(W / l.w, H / l.h) * l.zoom, nw = l.w * s, nh = l.h * s;
-  return {x: -Math.round((nw - W) * l.fx), y: -Math.round((nh - H) * l.fy), w: nw, h: nh, s};
+function box(l){ const r = l.rect; return r ? {x: r[0], y: r[1], w: r[2], h: r[3]} : {x: 0, y: 0, w: W, h: H}; }
+function photoRect(l){ // cover its box (the whole canvas by default), zoom, focus = share of the overflow
+  const b = box(l), s = Math.max(b.w / l.w, b.h / l.h) * l.zoom, nw = l.w * s, nh = l.h * s;
+  return {x: b.x - Math.round((nw - b.w) * l.fx), y: b.y - Math.round((nh - b.h) * l.fy), w: nw, h: nh, s, b};
 }
 function innerRect(c){ // image inside the circle: covers the d x d disc
   const s = Math.max(c.d / c.w, c.d / c.h) * c.zoom, nw = Math.max(c.d, c.w * s), nh = Math.max(c.d, c.h * s);
@@ -310,10 +323,11 @@ function drawX(c){
 function render(){
   ctx.clearRect(0, 0, W, H);
   for(const l of L){
-    if(l.type === 'photo' && l.img){ const r = photoRect(l); ctx.imageSmoothingQuality = 'high'; ctx.drawImage(l.img, r.x, r.y, r.w, r.h); }
+    if(l.type === 'photo' && l.img){ const r = photoRect(l); ctx.save(); ctx.beginPath(); ctx.rect(r.b.x, r.b.y, r.b.w, r.b.h); ctx.clip();
+      ctx.imageSmoothingQuality = 'high'; ctx.drawImage(l.img, r.x, r.y, r.w, r.h); ctx.restore(); }
     else if(l.type === 'static' && l.img) ctx.drawImage(l.img, 0, 0);
     else if(l.type === 'circle' && l.img) drawCircle(l);
-    else if(l.type === 'cutout' && l.maskImg && photo && photo.img) masked(photo.img, photoRect(photo), l.maskImg);
+    else if(l.type === 'cutout' && l.maskImg && photos[0] && photos[0].img) masked(photos[0].img, photoRect(photos[0]), l.maskImg);
     else if(l.type === 'xmark' && circle && circle.x) drawX(circle);
   }
   writeSettings();
@@ -324,7 +338,11 @@ let raf = 0; const req = () => { if(!raf) raf = requestAnimationFrame(() => { ra
 const r3 = v => Math.round(v * 1000) / 1000;
 function writeSettings(){
   const o = {};
-  if(photo){ o.bg_zoom = r3(photo.zoom); o.bg_focus_x = r3(photo.fx); o.bg_focus_y = r3(photo.fy); }
+  for(const p of photos){
+    if(p.key === undefined){ o.bg_zoom = r3(p.zoom); o.bg_focus_x = r3(p.fx); o.bg_focus_y = r3(p.fy); }
+    else if(p.index === undefined){ o[p.key] = Object.assign(o[p.key] || {}, {bg_zoom: r3(p.zoom), bg_focus_x: r3(p.fx), bg_focus_y: r3(p.fy)}); }
+    else { o[p.key] = o[p.key] || {}; (o[p.key].framing = o[p.key].framing || [])[p.index] = {zoom: r3(p.zoom), focus_x: r3(p.fx), focus_y: r3(p.fy)}; }
+  }
   if(circle){ o.circle = {pos: [Math.round(circle.cx), Math.round(circle.cy)], size: Math.round(circle.d),
                           zoom: r3(circle.zoom), focus_x: r3(circle.fx), focus_y: r3(circle.fy)}; }
   $('settings').value = JSON.stringify(o);
@@ -337,17 +355,19 @@ function setTarget(t){ if(!circle && t !== 'photo') return; target = t;
 document.querySelectorAll('#seg button').forEach(b => b.addEventListener('click', () => setTarget(b.dataset.t)));
 function pt(e){ const r = cv.getBoundingClientRect(); return {x: (e.clientX - r.left) * W / r.width, y: (e.clientY - r.top) * H / r.height, k: W / r.width}; }
 function inCircle(p){ return circle && Math.hypot(p.x - circle.cx, p.y - circle.cy) <= circle.d / 2; }
+function photoAt(p){ for(let i = photos.length - 1; i >= 0; i--){ const b = box(photos[i]);
+  if(p.x >= b.x && p.x <= b.x + b.w && p.y >= b.y && p.y <= b.y + b.h) return photos[i]; } return photos[0]; }
 function whatAt(p){ if(target === 'inner') return circle ? 'inner' : 'photo'; if(target === 'circle') return 'circle';
-  return inCircle(p) ? 'circle' : 'photo'; }
-function movePhoto(l, dx, dy){ const r = photoRect(l);
-  if(r.w > W) l.fx = clamp(l.fx - dx / (r.w - W), 0, 1); if(r.h > H) l.fy = clamp(l.fy - dy / (r.h - H), 0, 1); }
+  if(inCircle(p)) return 'circle'; if(photos.length){ photo = photoAt(p); syncSliders(); } return 'photo'; }
+function movePhoto(l, dx, dy){ const r = photoRect(l), b = r.b;
+  if(r.w > b.w) l.fx = clamp(l.fx - dx / (r.w - b.w), 0, 1); if(r.h > b.h) l.fy = clamp(l.fy - dy / (r.h - b.h), 0, 1); }
 function moveInner(c, dx, dy){ const r = innerRect(c);
   if(r.w > c.d) c.fx = clamp(c.fx - dx / (r.w - c.d), 0, 1); if(r.h > c.d) c.fy = clamp(c.fy - dy / (r.h - c.d), 0, 1); }
 function zoomPhoto(l, z, p){ // keep the point under the cursor in place
   const r0 = photoRect(l), ix = (p.x - r0.x) / r0.w, iy = (p.y - r0.y) / r0.h;
-  l.zoom = clamp(z, 1, 4); const r1 = photoRect({...l, fx: 0, fy: 0});
-  const x0 = ix * r1.w - p.x, y0 = iy * r1.h - p.y;
-  l.fx = r1.w > W ? clamp(x0 / (r1.w - W), 0, 1) : 0.5; l.fy = r1.h > H ? clamp(y0 / (r1.h - H), 0, 1) : 0.5;
+  l.zoom = clamp(z, 1, 4); const r1 = photoRect({...l, fx: 0, fy: 0}), b = r1.b;
+  const x0 = ix * r1.w - (p.x - b.x), y0 = iy * r1.h - (p.y - b.y);
+  l.fx = r1.w > b.w ? clamp(x0 / (r1.w - b.w), 0, 1) : 0.5; l.fy = r1.h > b.h ? clamp(y0 / (r1.h - b.h), 0, 1) : 0.5;
 }
 function zoomInner(c, z, p){
   const r0 = innerRect(c), ix = (p.x - r0.x) / r0.w, iy = (p.y - r0.y) / r0.h;
@@ -380,7 +400,7 @@ window.addEventListener('keydown', e => { // arrow keys nudge the selected item 
   else if(target === 'inner' && circle) moveInner(circle, dx, dy); req(); });
 function syncSliders(){ if(photo) $('zPhoto').value = photo.zoom; else $('zPhoto').disabled = true;
   if(circle){ $('zCircle').value = circle.d; $('zInner').value = circle.zoom; } }
-$('zPhoto').addEventListener('input', e => { if(photo){ zoomPhoto(photo, +e.target.value, {x: W / 2, y: H / 2}); req(); } });
+$('zPhoto').addEventListener('input', e => { if(photo){ const b = box(photo); zoomPhoto(photo, +e.target.value, {x: b.x + b.w / 2, y: b.y + b.h / 2}); req(); } });
 $('zCircle').addEventListener('input', e => { if(circle){ resizeCircle(circle, +e.target.value); req(); } });
 $('zInner').addEventListener('input', e => { if(circle){ zoomInner(circle, +e.target.value, {x: circle.cx, y: circle.cy}); req(); } });
 $('reset').addEventListener('click', () => { L.forEach((l, i) => Object.assign(l, Object.fromEntries(Object.entries(ORIG[i]).filter(([k, v]) => v !== undefined)))); syncSliders(); req(); });
